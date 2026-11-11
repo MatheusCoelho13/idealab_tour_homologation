@@ -12,6 +12,8 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #000; font-f
 .hotspot-link img { width: 100%; height: 100%; filter: drop-shadow(0 0 6px rgba(0, 0, 0, .8)); }
 
 .hotspot-info { display: flex; align-items: center; gap: 8px; margin: -18px 0 0 -18px; cursor: pointer; color: #fff; }
-.hotspot-info span { width: 36px; height: 36px; border-radius: 50%; background: rgba(30, 30, 30, .9); display: grid; place-items: center; font-weight: bold; box-shadow: 0 0 6px rgba(0, 0, 0, .8); }
-.hotspot-info div { display: none; padding: 6px 10px; border-radius: 4px; background: rgba(35, 35, 35, .95); font-size: 13px; max-width: 260px; }
+.hotspot-info span { width: 36px; height: 36px; border-radius: 50%; background: #1E293B; display: grid; place-items: center; font-weight: bold; box-shadow: 0 0 6px rgba(0, 0, 0, .8); }
+.hotspot-info div { display: none; padding: 6px 10px; border-radius: 4px; background: rgba(15, 23, 42, .9); color: #F8FAFC; font-family: 'Inter', sans-serif; font-size: 13px; width: max-content; max-width: min(400px, 75vw); max-height: 40vh; overflow-y: auto; overscroll-behavior: contain; }
+.hotspot-info strong { display: block; margin: -6px -10px 6px; padding: 6px 10px; border-radius: 4px 4px 0 0; background: #1E293B; color: #FFF; }
+.hotspot-info br { display: none; }
 .hotspot-info:hover div, .hotspot-info.open div { display: block; }

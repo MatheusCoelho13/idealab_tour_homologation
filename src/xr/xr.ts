@@ -2,28 +2,42 @@ import * as THREE from 'three'
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js'
 import { TOUR_URL, type SceneData } from '../types'
 
-// Marzipano preview.jpg = 6 faces empilhadas nesta ordem. Three CubeTexture espera px,nx,py,ny,pz,nz.
+// Three CubeTexture espera px,nx,py,ny,pz,nz.
 // Marzipano: frente = -z, direita = +x (mesma convenção yaw/pitch do app.js antigo).
-const STRIP = 'bdflru'
 const THREE_ORDER = 'rludbf'
 const RADIUS = 6
 
-async function loadCube(url: string): Promise<THREE.CubeTexture> {
-  const img = await new THREE.ImageLoader().loadAsync(url)
-  const s = img.width
-  const faces = [...THREE_ORDER].map((f) => {
-    const c = document.createElement('canvas')
-    c.width = c.height = s
-    c.getContext('2d')!.drawImage(img, 0, STRIP.indexOf(f) * s, s, s, 0, 0, s, s)
-    return c
-  })
+const MAX_FACE = 2048 // 6 faces de 2048² ≈ 100 MB de GPU; 4096 estoura memória no Quest
+const loader = new THREE.ImageLoader()
+
+const toCube = (faces: HTMLCanvasElement[]) => {
   const tex = new THREE.CubeTexture(faces)
   tex.colorSpace = THREE.SRGBColorSpace
   tex.needsUpdate = true
   return tex
 }
+const faceCanvas = (size: number) => Object.assign(document.createElement('canvas'), { width: size, height: size })
 
-/** Sessão VR com three.js. Panorama = preview.jpg (baixa-res); tiles em alta continuam só no Marzipano 2D. */
+/** Alta-res: costura os tiles do maior nível <= MAX_FACE. Nível z do Marzipano = índice em levels[]. */
+async function loadSharp(s: SceneData) {
+  let z = 0
+  s.levels.forEach((l, i) => { if (!l.fallbackOnly && l.size <= MAX_FACE) z = i })
+  if (!z) return null
+  const { size, tileSize } = s.levels[z]
+  const n = Math.ceil(size / tileSize)
+  const faces = await Promise.all([...THREE_ORDER].map(async (f) => {
+    const c = faceCanvas(size)
+    const ctx = c.getContext('2d')!
+    await Promise.all(Array.from({ length: n * n }, async (_, i) => {
+      const x = i % n, y = Math.floor(i / n)
+      ctx.drawImage(await loader.loadAsync(`${TOUR_URL}/tiles/${s.id}/${z}/${f}/${y}/${x}.jpg`), x * tileSize, y * tileSize)
+    }))
+    return c
+  }))
+  return toCube(faces)
+}
+
+/** Sessão VR com three.js. Cubo costurado dos tiles (até 2048px/face). */
 export function initXR(onNavigate: (id: string) => void) {
   const renderer = new THREE.WebGLRenderer({ antialias: true })
   renderer.xr.enabled = true
@@ -74,9 +88,11 @@ export function initXR(onNavigate: (id: string) => void) {
         mesh.userData.target = h.target
         hotspots.add(mesh)
       }
-      let tex = cubes.get(s.id)
-      if (!tex) cubes.set(s.id, (tex = await loadCube(`${TOUR_URL}/tiles/${s.id}/preview.jpg`)))
-      if (wanted === s.id) scene.background = tex // ignora resposta atrasada de cena já trocada
+      const show = (t: THREE.CubeTexture) => { if (wanted === s.id) scene.background = t } // ignora resposta atrasada
+      const hit = cubes.get(s.id)
+      if (hit) return show(hit)
+      const sharp = await loadSharp(s).catch(() => null)
+      if (sharp) { cubes.set(s.id, sharp); show(sharp) }
     },
   }
 }

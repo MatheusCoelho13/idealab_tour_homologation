@@ -22,9 +22,12 @@ if (await navigator.xr?.isSessionSupported('immersive-vr').catch(() => false)) {
   void xr.setScene(tour.scene)
 }
 
-// Giroscópio (celular)
+// Giroscópio (celular): roda junto com o arrastar. Liga sozinho no 1º toque fora dos botões
+// (iOS só libera sensor após gesto); o botão serve p/ desligar/religar.
 if (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
-  addButton('📱 Giroscópio', async (b) => b.classList.toggle('on', await toggleGyro(tour)))
+  let btn!: HTMLButtonElement
+  addButton('📱 Giroscópio', async (b) => (btn = b).classList.toggle('on', await toggleGyro(tour)))
+  addEventListener('click', (e) => { if (!(e.target as Element).closest('#ui')) btn.click() }, { once: true })
 }
 
 // Câmera (getUserMedia) — exemplo: preview. Troque pelo seu uso (ex.: captureFrame → API).
