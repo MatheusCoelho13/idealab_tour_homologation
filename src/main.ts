@@ -18,8 +18,8 @@ const addButton = (label: string, onClick: (b: HTMLButtonElement) => void) => {
 if (await navigator.xr?.isSessionSupported('immersive-vr').catch(() => false)) {
   const { initXR } = await import('./xr/xr')
   const xr = initXR(tour.goTo)
-  tour.onChange((s) => void xr.setScene(s))
-  void xr.setScene(tour.scene)
+  tour.onChange(xr.setScene)
+  xr.setScene(tour.scene)
 }
 
 // Giroscópio (celular): roda junto com o arrastar. Liga sozinho no 1º toque fora dos botões
