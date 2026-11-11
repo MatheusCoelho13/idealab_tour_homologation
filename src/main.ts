@@ -14,7 +14,10 @@ if (await navigator.xr?.isSessionSupported('immersive-vr').catch(() => false)) {
   xr.setScene(tour.scene)
 }
 
-// Giroscópio (celular), sem botão: liga no 1º toque (iOS só libera sensor após gesto).
-// Computador e Quest ficam no arrastar; no Quest a cabeça é rastreada dentro do VR (xr.ts).
-if (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent))
-  addEventListener('click', () => void toggleGyro(tour), { once: true })
+// Giroscópio, sem botão, em qualquer aparelho que tenha o sensor (celular, Quest fora do VR).
+// iOS só libera o sensor após um gesto, então lá liga no 1º toque; nos demais liga já.
+// Captura 'touchend' porque o Marzipano consome o toque e o 'click' nunca chega.
+if ('DeviceOrientationEvent' in window) {
+  if ('requestPermission' in DeviceOrientationEvent) addEventListener('touchend', () => void toggleGyro(tour), { once: true, capture: true })
+  else void toggleGyro(tour)
+}

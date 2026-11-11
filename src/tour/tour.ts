@@ -10,10 +10,12 @@ export function createTour(el: HTMLElement, data: TourData) {
   let current = data.scenes[0]
 
   const build = (s: SceneData): MScene => {
-    const source = Marzipano.ImageUrlSource.fromString(`${TOUR_URL}/tiles/${s.id}/{z}/{f}/{y}/{x}.jpg`)
+    // Só o nível mais nítido: sem prévia borrada nem níveis intermediários (pasta = índice em levels[]).
+    const top = s.levels.length - 1
+    const source = Marzipano.ImageUrlSource.fromString(`${TOUR_URL}/tiles/${s.id}/${top}/{f}/{y}/{x}.jpg`)
     const limiter = Marzipano.RectilinearView.limit.traditional(s.faceSize, (120 * Math.PI) / 180)
     const view = new Marzipano.RectilinearView(s.initialViewParameters, limiter)
-    const scene = viewer.createScene({ source, geometry: new Marzipano.CubeGeometry(s.levels), view })
+    const scene = viewer.createScene({ source, geometry: new Marzipano.CubeGeometry([s.levels[top]]), view })
     const hs = scene.hotspotContainer()
     for (const h of s.linkHotspots) hs.createHotspot(linkEl(h.target), h)
     for (const h of s.infoHotspots) hs.createHotspot(infoEl(h), h)

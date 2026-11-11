@@ -137,13 +137,12 @@ export function initXR(onNavigate: (id: string) => void) {
     scene.background = tex
   }
 
-  /** Mostra a cena (só dentro da sessão): nível mais baixo primeiro, que chega rápido, depois o mais nítido. */
+  /** Mostra a cena (só dentro da sessão), direto no nível mais nítido que cabe na GPU (sem prévia borrada). */
   const enter = async (s: SceneData) => {
     const id = ++seq
     clearHotspots() // somem no clique; os da cena nova entram junto com a imagem dela
     const zs = s.levels.flatMap((l, z) => (l.fallbackOnly || l.size > MAX_FACE ? [] : [z]))
-    const loads = [...new Set([zs[0], zs.at(-1)!])].map((z) =>
-      loadCube(s, z).catch((err) => (console.error('[XR] tiles', s.id, z, err), null)))
+    const loads = [loadCube(s, zs.at(-1)!).catch((err) => (console.error('[XR] tiles', s.id, err), null))]
     let first = true
     for (const load of loads) {
       const tex = await load
