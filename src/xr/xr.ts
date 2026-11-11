@@ -12,6 +12,10 @@ const FACE_ROT: Record<string, [number, number]> = {
 }
 const SKY = 10 // meia-aresta do cubo de fundo, em metros (atrás dos hotspots)
 const UPLOADS_PER_FRAME = 4
+// Andar com o corpo: um passo real na direção de um hotspot de link troca de cena.
+const WALK_STEP = 0.6 // metros de deslocamento da cabeça; inclinar o tronco dá ~0,3 m e não dispara
+const WALK_CONE = (40 * Math.PI) / 180 // tolerância entre a direção do passo e a do hotspot
+const UP = new THREE.Vector3(0, 1, 0)
 const RADIUS = 6
 const FADE_MS = 400 // duração de cada metade (escurecer / clarear) da troca de cena
 const MAX_FACE = 2048 // 96 tiles de 512² ≈ 100 MB de GPU; 4096 estoura memória no Quest
@@ -148,6 +152,10 @@ export function initXR(onNavigate: (id: string) => void, onSession: (active: boo
   let fadeTo = 1 // brilho-alvo do fundo: 0 escurece a cena que sai, 1 clareia a que entra
   let bright = 1
   let last = 0
+  const anchor = new THREE.Vector2() // posição (x, z) da cabeça de onde se mede o passo
+  const walk = new THREE.Vector2()
+  const dir = new THREE.Vector3()
+  const dir2 = new THREE.Vector2()
   let uploads: THREE.Texture[] = [] // texturas à espera de subir p/ a GPU, poucas por frame
   let uploaded: (() => void) | null = null
 
@@ -275,6 +283,27 @@ export function initXR(onNavigate: (id: string) => void, onSession: (active: boo
         hotspots.rotation.y = turn
         sky.rotation.y = turn
         face = null
+        anchor.set(hotspots.position.x, hotspots.position.z) // cena nova: o passo conta daqui
+      }
+      walk.set(hotspots.position.x - anchor.x, hotspots.position.z - anchor.y)
+      const dist = walk.length()
+      if (dist > WALK_STEP) {
+        let target: string | undefined
+        let best = WALK_CONE
+        for (const h of hotspots.children) {
+          if (!h.userData.target) continue
+          dir.copy(h.position).applyAxisAngle(UP, hotspots.rotation.y) // direção do hotspot na sala
+          const angle = walk.angleTo(dir2.set(dir.x, dir.z))
+          if (angle < best) { best = angle; target = h.userData.target }
+        }
+        if (target) {
+          anchor.set(hotspots.position.x, hotspots.position.z)
+          onNavigate(target)
+        } else {
+          // Coleira: sem hotspot nessa direção (ou cena carregando), a âncora segue a cabeça,
+          // então `walk` é sempre o passo mais recente e não o caminho todo desde a entrada.
+          anchor.addScaledVector(walk, 1 - WALK_STEP / dist)
+        }
       }
     }
     renderer.render(scene, camera)

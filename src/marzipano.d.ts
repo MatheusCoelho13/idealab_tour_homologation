@@ -2,12 +2,16 @@
 declare module 'marzipano' {
   interface View { yaw(): number; pitch(): number; setYaw(v: number): void; setPitch(v: number): void }
   interface Scene {
-    switchTo(): void
+    switchTo(opts?: { transitionDuration?: number }): void
     view(): View
     hotspotContainer(): { createHotspot(el: HTMLElement, pos: { yaw: number; pitch: number }): unknown }
   }
   class Viewer {
     constructor(el: HTMLElement)
+    stage(): {
+      addEventListener(ev: 'renderComplete', fn: (stable: boolean) => void): void
+      removeEventListener(ev: 'renderComplete', fn: (stable: boolean) => void): void
+    }
     createScene(o: { source: unknown; geometry: unknown; view: unknown; pinFirstLevel?: boolean }): Scene
   }
   const Marzipano: {

@@ -1,6 +1,8 @@
 import Marzipano from 'marzipano'
 import { TOUR_URL, type InfoHotspot, type SceneData, type TourData } from '../types'
 
+const FADE_MS = 400 // duração de cada metade (escurecer / clarear) da troca de cena
+
 type MScene = ReturnType<InstanceType<typeof Marzipano.Viewer>['createScene']>
 
 export function createTour(el: HTMLElement, data: TourData) {
@@ -30,8 +32,7 @@ export function createTour(el: HTMLElement, data: TourData) {
     return el
   }
 
-  // O switchTo() já faz crossfade de 1 s, mas só fica suave se os tiles da cena nova já estiverem
-  // no cache HTTP; senão o fade abre numa cena preta. Por isso as vizinhas são baixadas antes do clique.
+  // As vizinhas são baixadas antes do clique, para a troca de cena passar pouco tempo no escuro.
   // Fila de 2 downloads em baixa prioridade: disparar tudo de uma vez (até 480 imagens) disputava
   // rede com a cena atual e travava. Trocar de cena descarta o que sobrou da fila anterior.
   const queue: string[] = []
@@ -56,12 +57,32 @@ export function createTour(el: HTMLElement, data: TourData) {
   // ele disputaria rede e GPU com o VR. Ao sair da pausa, mostra a cena em que o VR parou.
   let paused = false
   let shown: SceneData | undefined
-  const show = (s: SceneData) => {
+  let showSeq = 0 // invalida a troca anterior se clicarem de novo no meio do fade
+
+  /** Resolve quando o Marzipano terminou de desenhar todos os tiles visíveis (ou após 5 s de rede lenta). */
+  const stable = () => new Promise<void>((res) => {
+    const stage = viewer.stage()
+    const done = () => { stage.removeEventListener('renderComplete', on); clearTimeout(timer); res() }
+    const on = (ok: boolean) => { if (ok) done() }
+    const timer = setTimeout(done, 5000)
+    stage.addEventListener('renderComplete', on)
+  })
+
+  // Mesma transição do VR: escurece, troca no escuro, e só clareia com a cena nova inteira na tela.
+  // O crossfade do Marzipano mostrava os tiles da cena nova aparecendo aos pedaços.
+  el.style.transition = `opacity ${FADE_MS}ms`
+  const show = async (s: SceneData) => {
     if (shown === s) return
+    const first = !shown
     shown = s
+    const id = ++showSeq
     let scene = cache.get(s.id)
     if (!scene) cache.set(s.id, (scene = build(s)))
-    scene.switchTo()
+    el.style.opacity = '0'
+    if (!first) await new Promise((r) => setTimeout(r, FADE_MS))
+    if (id !== showSeq) return
+    scene.switchTo({ transitionDuration: 0 })
+    void stable().then(() => { if (id === showSeq) el.style.opacity = '1' })
     queue.length = 0
     for (const h of s.linkHotspots) {
       const next = data.scenes.find((x) => x.id === h.target)
@@ -74,7 +95,7 @@ export function createTour(el: HTMLElement, data: TourData) {
     const s = data.scenes.find((x) => x.id === id)
     if (!s) return console.error('Cena não encontrada:', id)
     current = s
-    if (!paused) show(s)
+    if (!paused) void show(s)
     listeners.forEach((fn) => fn(s))
   }
 
@@ -87,7 +108,7 @@ export function createTour(el: HTMLElement, data: TourData) {
     setPaused(p: boolean) {
       paused = p
       if (p) queue.length = 0
-      else show(current)
+      else void show(current)
     },
     onChange: (fn: (s: SceneData) => void) => void listeners.push(fn),
   }
