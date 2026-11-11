@@ -9,7 +9,7 @@ const tour = createTour(document.getElementById('pano')!, data)
 // WebXR (three só é baixado se o aparelho suporta VR imersivo)
 if (await navigator.xr?.isSessionSupported('immersive-vr').catch(() => false)) {
   const { initXR } = await import('./xr/xr')
-  const xr = initXR(tour.goTo)
+  const xr = initXR(tour.goTo, tour.setPaused)
   tour.onChange(xr.setScene)
   xr.setScene(tour.scene)
 }

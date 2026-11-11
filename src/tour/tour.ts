@@ -52,19 +52,29 @@ export function createTour(el: HTMLElement, data: TourData) {
       queue.push(`${TOUR_URL}/tiles/${s.id}/${top}/${f}/${y}/${x}.jpg`)
   }
 
-  const goTo = (id: string) => {
-    const s = data.scenes.find((x) => x.id === id)
-    if (!s) return console.error('Cena não encontrada:', id)
-    let scene = cache.get(id)
-    if (!scene) cache.set(id, (scene = build(s)))
+  // Em pausa (sessão VR aberta) o 2D não troca de cena nem baixa nada: ninguém o vê, e no Quest
+  // ele disputaria rede e GPU com o VR. Ao sair da pausa, mostra a cena em que o VR parou.
+  let paused = false
+  let shown: SceneData | undefined
+  const show = (s: SceneData) => {
+    if (shown === s) return
+    shown = s
+    let scene = cache.get(s.id)
+    if (!scene) cache.set(s.id, (scene = build(s)))
     scene.switchTo()
-    current = s
     queue.length = 0
     for (const h of s.linkHotspots) {
       const next = data.scenes.find((x) => x.id === h.target)
       if (next) preload(next)
     }
     setTimeout(pump, 1500) // deixa a cena atual carregar primeiro
+  }
+
+  const goTo = (id: string) => {
+    const s = data.scenes.find((x) => x.id === id)
+    if (!s) return console.error('Cena não encontrada:', id)
+    current = s
+    if (!paused) show(s)
     listeners.forEach((fn) => fn(s))
   }
 
@@ -73,7 +83,12 @@ export function createTour(el: HTMLElement, data: TourData) {
   return {
     goTo,
     get scene() { return current },
-    view: () => cache.get(current.id)!.view(),
+    view: () => cache.get(shown!.id)!.view(),
+    setPaused(p: boolean) {
+      paused = p
+      if (p) queue.length = 0
+      else show(current)
+    },
     onChange: (fn: (s: SceneData) => void) => void listeners.push(fn),
   }
 }

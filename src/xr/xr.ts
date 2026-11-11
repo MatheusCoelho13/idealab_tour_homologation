@@ -2,34 +2,45 @@ import * as THREE from 'three'
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js'
 import { TOUR_URL, type InfoHotspot, type SceneData } from '../types'
 
-// Ordem do CubeTexture: px,nx,py,ny,pz,nz. O three espelha o X de cubemaps (convenção left-handed),
-// então as 6 faces do Marzipano só se emendam com a frente em +z: r,l,u,d,f,b.
-// backgroundRotation gira π p/ a frente cair em −z, que é a convenção de yaw/pitch do Marzipano
-// (frente = −z, direita = +x, pitch positivo = para BAIXO).
-const FACES = 'rludfb'
+// Convenção de yaw/pitch do Marzipano: frente = −z, direita = +x, pitch positivo = para BAIXO.
+// O fundo é um cubo de planos, 1 por tile, em vez de 1 CubeTexture costurado em canvas: medido no
+// Quest 2, costurar e subir 6 faces de 2048² de uma vez congelava ~0,6 s e deixava ~1 s a 10 fps a
+// cada troca de cena. Tile de 512² sobe em ~1 ms, então dá para subir poucos por frame.
+// Rotação [x, y] que leva a face da frente (em −z) a cada face do cubo, como no CubeGeometry do Marzipano.
+const FACE_ROT: Record<string, [number, number]> = {
+  f: [0, 0], b: [0, Math.PI], l: [0, Math.PI / 2], r: [0, -Math.PI / 2], u: [Math.PI / 2, 0], d: [-Math.PI / 2, 0],
+}
+const SKY = 10 // meia-aresta do cubo de fundo, em metros (atrás dos hotspots)
+const UPLOADS_PER_FRAME = 4
 const RADIUS = 6
 const FADE_MS = 400 // duração de cada metade (escurecer / clarear) da troca de cena
-const MAX_FACE = 2048 // 6 faces de 2048² ≈ 134 MB de GPU (com mipmaps); 4096 estoura memória no Quest
-const loader = new THREE.ImageLoader()
+const MAX_FACE = 2048 // 96 tiles de 512² ≈ 100 MB de GPU; 4096 estoura memória no Quest
+// ImageBitmap decodifica fora da thread principal; flipY tem de ser na criação (o WebGL ignora o do three).
+const loader = new THREE.ImageBitmapLoader().setOptions({ imageOrientation: 'flipY' })
 
-/** Costura os tiles do nível z (índice em levels[] = pasta {z} do Marzipano) num cubo. */
-async function loadCube(s: SceneData, z: number) {
+interface Tile { f: string; x: number; y: number; n: number; tex: THREE.Texture }
+
+/** Baixa e decodifica os tiles do nível z (índice em levels[] = pasta {z} do Marzipano). Tile que falha vira buraco. */
+async function loadTiles(s: SceneData, z: number): Promise<Tile[]> {
   const { size, tileSize } = s.levels[z]
   const n = Math.ceil(size / tileSize)
-  const faces = await Promise.all([...FACES].map(async (f) => {
-    const c = Object.assign(document.createElement('canvas'), { width: size, height: size })
-    const ctx = c.getContext('2d')!
-    await Promise.all(Array.from({ length: n * n }, async (_, i) => {
-      const x = i % n, y = Math.floor(i / n)
-      ctx.drawImage(await loader.loadAsync(`${TOUR_URL}/tiles/${s.id}/${z}/${f}/${y}/${x}.jpg`), x * tileSize, y * tileSize)
-    }))
-    return c
+  const jobs = Object.keys(FACE_ROT).flatMap((f) => Array.from({ length: n * n }, async (_, i) => {
+    const x = i % n, y = Math.floor(i / n)
+    try {
+      const tex = new THREE.Texture(await loader.loadAsync(`${TOUR_URL}/tiles/${s.id}/${z}/${f}/${y}/${x}.jpg`))
+      tex.colorSpace = THREE.SRGBColorSpace
+      tex.generateMipmaps = false // ~1 texel por pixel no headset: mipmap só custaria memória e tempo
+      tex.minFilter = THREE.LinearFilter
+      tex.needsUpdate = true
+      return { f, x, y, n, tex }
+    } catch (err) {
+      console.error('[XR] tile', s.id, f, y, x, err)
+      return null
+    }
   }))
-  const tex = new THREE.CubeTexture(faces)
-  tex.colorSpace = THREE.SRGBColorSpace
-  tex.needsUpdate = true
-  return tex
+  return (await Promise.all(jobs)).filter((t) => t !== null)
 }
+const dropTile = (tex: THREE.Texture) => { (tex.image as ImageBitmap).close(); tex.dispose() }
 
 /** Textura a partir de um canvas 2D (o DOM não aparece dentro da sessão imersiva). */
 function canvasTexture(w: number, h: number, draw: (ctx: CanvasRenderingContext2D) => void) {
@@ -79,17 +90,19 @@ function infoPanel({ title, text }: InfoHotspot) {
 }
 
 /**
- * Sessão VR com three.js: cubo costurado dos tiles + hotspots de link e de info clicáveis por controle.
+ * Sessão VR com three.js: cubo de tiles + hotspots de link e de info clicáveis por controle.
  * A cabeça (giroscópio do headset) vem do WebXR. Nada é baixado nem desenhado fora da sessão.
  */
-export function initXR(onNavigate: (id: string) => void) {
+export function initXR(onNavigate: (id: string) => void, onSession: (active: boolean) => void) {
   const renderer = new THREE.WebGLRenderer({ antialias: true })
   renderer.xr.enabled = true
   renderer.xr.setReferenceSpaceType('local')
   const scene = new THREE.Scene()
   const camera = new THREE.PerspectiveCamera(70, 1, 0.1, 100)
   const hotspots = new THREE.Group()
-  scene.add(hotspots)
+  const sky = new THREE.Group() // 1 grupo por face, 1 plano por tile
+  scene.add(sky, hotspots)
+  const tileGeo = new THREE.PlaneGeometry(1, 1)
 
   const linkMat = new THREE.MeshBasicMaterial({
     map: new THREE.TextureLoader().load(`${TOUR_URL}/img/link.png`, (t) => (t.colorSpace = THREE.SRGBColorSpace)),
@@ -133,26 +146,58 @@ export function initXR(onNavigate: (id: string) => void) {
   let seq = 0 // invalida cargas de uma cena/sessão que já passou
   let face: number | null = null // yaw da cena a pôr à frente do olhar no próximo frame
   let fadeTo = 1 // brilho-alvo do fundo: 0 escurece a cena que sai, 1 clareia a que entra
+  let bright = 1
   let last = 0
+  let uploads: THREE.Texture[] = [] // texturas à espera de subir p/ a GPU, poucas por frame
+  let uploaded: (() => void) | null = null
 
-  const setBackground = (tex: THREE.CubeTexture | null) => {
-    ;(scene.background as THREE.Texture | null)?.dispose() // 1 cubo por vez: o Quest 2 não aguenta vários
-    scene.background = tex
+  const tileMats = () => sky.children.flatMap((g) => (g.children as THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>[]).map((m) => m.material))
+  const clearSky = () => {
+    for (const mat of tileMats()) { dropTile(mat.map!); mat.dispose() }
+    sky.clear()
+  }
+  /** Solta quem espera a fila de upload (cena trocada ou sessão encerrada no meio). */
+  const flushUploads = () => {
+    uploads = []
+    uploaded?.()
+    uploaded = null
   }
 
   /** Mostra a cena (só dentro da sessão), direto no nível mais nítido que cabe na GPU (sem prévia borrada). */
   const enter = async (s: SceneData) => {
     const id = ++seq
+    flushUploads()
     clearHotspots() // somem no clique; os da cena nova entram junto com a imagem dela
     const zs = s.levels.flatMap((l, z) => (l.fallbackOnly || l.size > MAX_FACE ? [] : [z]))
-    // Transição suave: a cena que sai escurece enquanto a nova carrega; a troca só acontece no escuro.
+    // Transição suave: a cena que sai escurece enquanto a nova baixa e decodifica; todo o trabalho
+    // de GPU (liberar a antiga, subir a nova) acontece no escuro, onde engasgo não aparece.
     fadeTo = 0
-    const [tex] = await Promise.all([
-      loadCube(s, zs.at(-1)!).catch((err) => (console.error('[XR] tiles', s.id, err), null)),
-      new Promise((r) => setTimeout(r, FADE_MS)),
-    ])
-    if (id !== seq) return void tex?.dispose() // trocou de cena ou saiu do VR durante a carga
-    if (tex) setBackground(tex)
+    const loading = loadTiles(s, zs.at(-1)!)
+    await new Promise((r) => setTimeout(r, FADE_MS))
+    if (id === seq) clearSky() // 1 cena na GPU por vez: o Quest 2 não aguenta duas
+    const tiles = await loading
+    const drop = () => tiles.forEach((t) => dropTile(t.tex))
+    if (id !== seq) return drop() // trocou de cena ou saiu do VR durante a carga
+    await new Promise<void>((r) => { uploads = tiles.map((t) => t.tex); uploaded = r })
+    if (id !== seq) return drop()
+
+    const faces = new Map<string, THREE.Group>()
+    const w = (2 * SKY) / (tiles[0]?.n ?? 1)
+    for (const t of tiles) {
+      let g = faces.get(t.f)
+      if (!g) {
+        g = new THREE.Group()
+        g.rotation.set(...FACE_ROT[t.f], 0)
+        faces.set(t.f, g)
+        sky.add(g)
+      }
+      const mat = new THREE.MeshBasicMaterial({ map: t.tex, depthWrite: false })
+      mat.color.setScalar(bright)
+      const mesh = new THREE.Mesh(tileGeo, mat)
+      mesh.scale.setScalar(w * 1.002) // sobreposição mínima: sem fresta entre tiles
+      mesh.position.set(-SKY + (t.x + 0.5) * w, SKY - (t.y + 0.5) * w, -SKY)
+      g.add(mesh)
+    }
     for (const h of s.linkHotspots) {
       const mesh = new THREE.Mesh(linkGeo, linkMat)
       mesh.userData.target = h.target
@@ -193,28 +238,42 @@ export function initXR(onNavigate: (id: string) => void) {
   }
 
   document.body.append(VRButton.createButton(renderer))
-  renderer.xr.addEventListener('sessionstart', () => { if (current) void enter(current) })
+  renderer.xr.addEventListener('sessionstart', () => {
+    onSession(true)
+    if (current) void enter(current)
+  })
   renderer.xr.addEventListener('sessionend', () => {
     seq++
+    flushUploads()
     clearHotspots()
-    setBackground(null)
+    clearSky()
+    onSession(false)
   })
 
   renderer.setAnimationLoop((time, frame?: XRFrame) => {
     if (!frame) return // fora da sessão VR não há o que desenhar (o canvas nem está no DOM)
     const step = Math.min(time - last, 100) / FADE_MS // fração do fade neste frame
     last = time
-    scene.backgroundIntensity = THREE.MathUtils.clamp(scene.backgroundIntensity + Math.sign(fadeTo - scene.backgroundIntensity) * step, 0, 1)
+    if (bright !== fadeTo) {
+      bright = THREE.MathUtils.clamp(bright + Math.sign(fadeTo - bright) * step, 0, 1)
+      for (const mat of tileMats()) mat.color.setScalar(bright)
+    }
+    for (let i = 0; i < UPLOADS_PER_FRAME && uploads.length; i++) renderer.initTexture(uploads.pop()!)
+    if (!uploads.length && uploaded) {
+      uploaded()
+      uploaded = null
+    }
     const pose = frame.getViewerPose(renderer.xr.getReferenceSpace()!)
     if (pose) {
-      // Foto 360 não tem profundidade: os hotspots acompanham a posição da cabeça, como o fundo.
+      // Foto 360 não tem profundidade: fundo e hotspots acompanham a posição da cabeça.
       // Só a rotação conta, então andar/inclinar não descola o hotspot da imagem.
       hotspots.position.copy(pose.transform.position)
+      sky.position.copy(hotspots.position)
       if (face !== null) {
         const head = pose.transform.matrix // coluna 2 = eixo z da cabeça; o olhar é −z
         const turn = face - Math.atan2(-head[8], head[10])
         hotspots.rotation.y = turn
-        scene.backgroundRotation.y = Math.PI + turn
+        sky.rotation.y = turn
         face = null
       }
     }
