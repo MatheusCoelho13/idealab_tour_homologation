@@ -30,6 +30,28 @@ export function createTour(el: HTMLElement, data: TourData) {
     return el
   }
 
+  // O switchTo() já faz crossfade de 1 s, mas só fica suave se os tiles da cena nova já estiverem
+  // no cache HTTP; senão o fade abre numa cena preta. Por isso as vizinhas são baixadas antes do clique.
+  // Fila de 2 downloads em baixa prioridade: disparar tudo de uma vez (até 480 imagens) disputava
+  // rede com a cena atual e travava. Trocar de cena descarta o que sobrou da fila anterior.
+  const queue: string[] = []
+  let active = 0
+  const pump = () => {
+    while (active < 2 && queue.length) {
+      const img = new Image()
+      active++
+      img.onload = img.onerror = () => { active--; pump() }
+      img.fetchPriority = 'low'
+      img.src = queue.shift()!
+    }
+  }
+  const preload = (s: SceneData) => {
+    const top = s.levels.length - 1
+    const n = Math.ceil(s.levels[top].size / s.levels[top].tileSize)
+    for (const f of 'fblrud') for (let y = 0; y < n; y++) for (let x = 0; x < n; x++)
+      queue.push(`${TOUR_URL}/tiles/${s.id}/${top}/${f}/${y}/${x}.jpg`)
+  }
+
   const goTo = (id: string) => {
     const s = data.scenes.find((x) => x.id === id)
     if (!s) return console.error('Cena não encontrada:', id)
@@ -37,6 +59,12 @@ export function createTour(el: HTMLElement, data: TourData) {
     if (!scene) cache.set(id, (scene = build(s)))
     scene.switchTo()
     current = s
+    queue.length = 0
+    for (const h of s.linkHotspots) {
+      const next = data.scenes.find((x) => x.id === h.target)
+      if (next) preload(next)
+    }
+    setTimeout(pump, 1500) // deixa a cena atual carregar primeiro
     listeners.forEach((fn) => fn(s))
   }
 

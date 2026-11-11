@@ -8,6 +8,7 @@ import { TOUR_URL, type InfoHotspot, type SceneData } from '../types'
 // (frente = −z, direita = +x, pitch positivo = para BAIXO).
 const FACES = 'rludfb'
 const RADIUS = 6
+const FADE_MS = 400 // duração de cada metade (escurecer / clarear) da troca de cena
 const MAX_FACE = 2048 // 6 faces de 2048² ≈ 134 MB de GPU (com mipmaps); 4096 estoura memória no Quest
 const loader = new THREE.ImageLoader()
 
@@ -131,6 +132,8 @@ export function initXR(onNavigate: (id: string) => void) {
   let current: SceneData | undefined
   let seq = 0 // invalida cargas de uma cena/sessão que já passou
   let face: number | null = null // yaw da cena a pôr à frente do olhar no próximo frame
+  let fadeTo = 1 // brilho-alvo do fundo: 0 escurece a cena que sai, 1 clareia a que entra
+  let last = 0
 
   const setBackground = (tex: THREE.CubeTexture | null) => {
     ;(scene.background as THREE.Texture | null)?.dispose() // 1 cubo por vez: o Quest 2 não aguenta vários
@@ -142,28 +145,28 @@ export function initXR(onNavigate: (id: string) => void) {
     const id = ++seq
     clearHotspots() // somem no clique; os da cena nova entram junto com a imagem dela
     const zs = s.levels.flatMap((l, z) => (l.fallbackOnly || l.size > MAX_FACE ? [] : [z]))
-    const loads = [loadCube(s, zs.at(-1)!).catch((err) => (console.error('[XR] tiles', s.id, err), null))]
-    let first = true
-    for (const load of loads) {
-      const tex = await load
-      if (id !== seq) { tex?.dispose(); continue } // trocou de cena ou saiu do VR durante a carga
-      if (tex) setBackground(tex)
-      if (!first) continue
-      first = false
-      for (const h of s.linkHotspots) {
-        const mesh = new THREE.Mesh(linkGeo, linkMat)
-        mesh.userData.target = h.target
-        place(mesh, h, RADIUS)
-      }
-      for (const h of s.infoHotspots) {
-        const mesh = new THREE.Mesh(infoGeo, infoMat)
-        mesh.userData.info = h
-        place(mesh, h, RADIUS)
-      }
-      // ponytail: toda cena abre com a vista inicial à frente do olhar (igual ao 2D). Para manter o
-      // rumo de viagem entre cenas, alinhar pelo hotspot de volta da cena nova em vez deste yaw.
-      face = s.initialViewParameters.yaw
+    // Transição suave: a cena que sai escurece enquanto a nova carrega; a troca só acontece no escuro.
+    fadeTo = 0
+    const [tex] = await Promise.all([
+      loadCube(s, zs.at(-1)!).catch((err) => (console.error('[XR] tiles', s.id, err), null)),
+      new Promise((r) => setTimeout(r, FADE_MS)),
+    ])
+    if (id !== seq) return void tex?.dispose() // trocou de cena ou saiu do VR durante a carga
+    if (tex) setBackground(tex)
+    for (const h of s.linkHotspots) {
+      const mesh = new THREE.Mesh(linkGeo, linkMat)
+      mesh.userData.target = h.target
+      place(mesh, h, RADIUS)
     }
+    for (const h of s.infoHotspots) {
+      const mesh = new THREE.Mesh(infoGeo, infoMat)
+      mesh.userData.info = h
+      place(mesh, h, RADIUS)
+    }
+    // ponytail: toda cena abre com a vista inicial à frente do olhar (igual ao 2D). Para manter o
+    // rumo de viagem entre cenas, alinhar pelo hotspot de volta da cena nova em vez deste yaw.
+    face = s.initialViewParameters.yaw
+    fadeTo = 1
   }
 
   const ray = new THREE.Raycaster()
@@ -197,8 +200,11 @@ export function initXR(onNavigate: (id: string) => void) {
     setBackground(null)
   })
 
-  renderer.setAnimationLoop((_time, frame?: XRFrame) => {
+  renderer.setAnimationLoop((time, frame?: XRFrame) => {
     if (!frame) return // fora da sessão VR não há o que desenhar (o canvas nem está no DOM)
+    const step = Math.min(time - last, 100) / FADE_MS // fração do fade neste frame
+    last = time
+    scene.backgroundIntensity = THREE.MathUtils.clamp(scene.backgroundIntensity + Math.sign(fadeTo - scene.backgroundIntensity) * step, 0, 1)
     const pose = frame.getViewerPose(renderer.xr.getReferenceSpace()!)
     if (pose) {
       // Foto 360 não tem profundidade: os hotspots acompanham a posição da cabeça, como o fundo.
